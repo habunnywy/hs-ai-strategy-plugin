@@ -173,12 +173,10 @@ class AiDeckStrategy : DeckStrategy() {
     }
 
     private fun fallbackExecute(me: Player, rival: Player) {
+        val fallbackId = AiConfig.fallbackStrategyId()
         try {
-            val fallbackId = AiConfig.fallbackStrategyId()
             val cl = Thread.currentThread().contextClassLoader ?: DeckStrategy::class.java.classLoader
             val strategies = java.util.ServiceLoader.load(DeckStrategy::class.java, cl).toList()
-            log.info { "ServiceLoader找到${strategies.size}个策略" }
-            strategies.forEach { log.info { "  策略: id=${it.id()}, name=${it.name()}" } }
             val radicalStrategy = strategies.firstOrNull { it.id() == fallbackId }
             if (radicalStrategy != null) {
                 log.info { "使用激进策略($fallbackId)兜底" }
@@ -188,63 +186,48 @@ class AiDeckStrategy : DeckStrategy() {
                 return
             }
             val className = "club.xiaojiawei.hsscriptbasestrategy.strategy.HsRadicalDeckStrategy"
-            val radicalStrategy2 = try {
-                Class.forName(className, true, cl)?.getDeclaredConstructor()?.newInstance() as? DeckStrategy
-            } catch (e: Exception) {
-                log.warn { "反射加载激进策略失败: ${e.message}" }
-                null
-            }
-            if (radicalStrategy2 != null) {
-                log.info { "使用激进策略(反射)兜底" }
-                radicalStrategy2.reset()
-                radicalStrategy2.executeOutCard()
-                log.info { "激进策略(反射)兜底完毕" }
-                return
-            }
-            log.warn { "未找到激进策略($fallbackId)，使用简易兜底" }
-            simpleFallback(me, rival)
-        } catch (e: Exception) {
-            log.error { "兜底策略异常: ${e.message}" }
-            simpleFallback(me, rival)
-        }
-    }
-
-    private fun simpleFallback(me: Player, rival: Player) {
-        try {
-            log.info { "简易兜底开始" }
-            val hand = me.handArea.cards.toList().sortedBy { it.cost }
-            for (card in hand) {
-                if (me.usableResource < card.cost) continue
-                if (card.action.power() != null) {
-                    log.info { "兜底出牌: ${card.entityName}(${card.cost}费)" }
-                    Thread.sleep(1000)
+            try {
+                val clazz = Class.forName(className, true, cl)
+                val instance = clazz.getDeclaredConstructor().newInstance() as? DeckStrategy
+                if (instance != null && instance.id() == fallbackId) {
+                    log.info { "使用激进策略(反射)兜底" }
+                    instance.reset()
+                    instance.executeOutCard()
+                    log.info { "激进策略(反射)兜底完毕" }
+                    return
                 }
-            }
-            val myBoard = me.playArea.cards.toList()
-            val rivalBoard = rival.playArea.cards.toList()
-            val taunts = rivalBoard.filter { it.isTaunt }
-            for (attacker in myBoard) {
-                if (attacker.isExhausted || attacker.isFrozen || attacker.atc <= 0) continue
-                val target = taunts.firstOrNull() ?: rivalBoard.firstOrNull() ?: rival.playArea.hero
-                if (target != null) {
-                    if (target === rival.playArea.hero) {
-                        attacker.action.attackHero()
-                    } else {
-                        attacker.action.attack(target)
+            } catch (_: Exception) {}
+            val pluginDir = java.io.File("plugin")
+            if (pluginDir.exists() && pluginDir.isDirectory) {
+                val jars = pluginDir.listFiles { _, name -> name.endsWith(".jar") } ?: emptyArray()
+                if (jars.isNotEmpty()) {
+                    log.info { "尝试从plugin目录加载(${jars.size}个jar)..." }
+                    val urls = jars.map { it.toURI().toURL() }.toTypedArray()
+                    val pluginCl = java.net.URLClassLoader(urls, DeckStrategy::class.java.classLoader)
+                    val pluginStrategies = java.util.ServiceLoader.load(DeckStrategy::class.java, pluginCl).toList()
+                    log.info { "plugin目录ServiceLoader找到${pluginStrategies.size}个策略" }
+                    val radical = pluginStrategies.firstOrNull { it.id() == fallbackId }
+                    if (radical != null) {
+                        log.info { "使用激进策略(URLClassLoader)兜底" }
+                        radical.reset()
+                        radical.executeOutCard()
+                        log.info { "激进策略兜底完毕" }
+                        return
                     }
-                    log.info { "兜底攻击: ${attacker.entityName} -> ${target?.entityName}" }
-                    Thread.sleep(1000)
+                    val clazz = Class.forName(className, true, pluginCl)
+                    val instance = clazz.getDeclaredConstructor().newInstance() as? DeckStrategy
+                    if (instance != null) {
+                        log.info { "使用激进策略(URLClassLoader+反射)兜底" }
+                        instance.reset()
+                        instance.executeOutCard()
+                        log.info { "激进策略兜底完毕" }
+                        return
+                    }
                 }
             }
-            val power = me.playArea.power
-            if (power != null && me.usableResource >= power.cost) {
-                power.action.power()
-                log.info { "兜底使用英雄技能" }
-                Thread.sleep(500)
-            }
-            log.info { "简易兜底完毕" }
+            log.warn { "无法加载激进策略($fallbackId)，本回合空过" }
         } catch (e: Exception) {
-            log.error { "简易兜底异常: ${e.message}" }
+            log.error { "激进策略兜底异常: ${e.message}" }
         }
     }
 
